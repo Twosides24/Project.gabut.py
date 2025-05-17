@@ -1,0 +1,348 @@
+import pygame
+import sys
+import random
+
+pygame.init()
+
+WIDTH, HEIGHT = 800, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Petualangan Si Kucing - Versi Upgrade")
+clock = pygame.time.Clock()
+
+# Warna
+SKY = (135, 206, 250)
+GROUND = (80, 200, 120)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+FISH_COLOR = (255, 165, 0)
+ENEMY_COLOR = (200, 50, 50)
+BOSS_COLOR = (120, 0, 120)
+PROJECTILE_COLOR = (255, 50, 50)
+
+font = pygame.font.SysFont(None, 36)
+
+gravity = 0.7
+score = 0
+lives = 3
+
+class Platform:
+    def __init__(self, x, y, w, h):
+        self.rect = pygame.Rect(x, y, w, h)
+    def draw(self, screen):
+        pygame.draw.rect(screen, GROUND, self.rect)
+
+class Cat:
+    def __init__(self):
+        self.width = 50
+        self.height = 60
+        self.x = 100
+        self.y = HEIGHT - self.height - 50
+        self.vel_y = 0
+        self.speed = 6
+        self.on_ground = False
+        self.rect = pygame.Rect(self.x, self.y, self.width, self.height)
+        self.jumping = False
+        self.jump_count = 0
+        self.max_jumps = 2
+
+    def move(self, dx):
+        self.rect.x += dx * self.speed
+        if self.rect.left < 0:
+            self.rect.left = 0
+        if self.rect.right > WIDTH:
+            self.rect.right = WIDTH
+
+    def jump(self):
+        if self.jump_count < self.max_jumps:
+            self.vel_y = -15
+            self.jumping = True
+            self.jump_count += 1
+            self.on_ground = False
+
+    def apply_gravity(self):
+        # Buat lompat lebih halus dengan perlambatan saat naik
+        if self.jumping and self.vel_y < 0:
+            self.vel_y += gravity * 0.5
+        else:
+            self.vel_y += gravity
+        self.rect.y += self.vel_y
+
+    def update(self, platforms):
+        self.apply_gravity()
+
+        # cek tabrakan dengan platform
+        self.on_ground = False
+        for platform in platforms:
+            if self.rect.colliderect(platform.rect) and self.vel_y >= 0:
+                if self.rect.bottom <= platform.rect.bottom:
+                    self.rect.bottom = platform.rect.top
+                    self.vel_y = 0
+                    self.on_ground = True
+                    self.jumping = False
+                    self.jump_count = 0
+
+    def draw(self, screen):
+        pygame.draw.circle(screen, (255, 140, 0), (self.rect.centerx, self.rect.top + 20), 20)
+        pygame.draw.rect(screen, (255, 165, 0), (self.rect.x, self.rect.y + 30, self.width, self.height - 30))
+        pygame.draw.circle(screen, BLACK, (self.rect.centerx - 10, self.rect.top + 15), 5)
+        pygame.draw.circle(screen, BLACK, (self.rect.centerx + 10, self.rect.top + 15), 5)
+        pygame.draw.polygon(screen, (255, 140, 0), [(self.rect.centerx - 20, self.rect.top + 5), (self.rect.centerx - 10, self.rect.top - 10), (self.rect.centerx, self.rect.top + 5)])
+        pygame.draw.polygon(screen, (255, 140, 0), [(self.rect.centerx + 20, self.rect.top + 5), (self.rect.centerx + 10, self.rect.top - 10), (self.rect.centerx, self.rect.top + 5)])
+
+class Fish:
+    def __init__(self, x, y):
+        self.radius = 15
+        self.x = x
+        self.y = y
+        self.rect = pygame.Rect(x - self.radius, y - self.radius, self.radius*2, self.radius*2)
+    def draw(self, screen):
+        pygame.draw.ellipse(screen, FISH_COLOR, self.rect)
+        pygame.draw.polygon(screen, (255, 140, 0), [(self.x + 10, self.y), (self.x + 25, self.y - 5), (self.x + 25, self.y + 5)])
+
+class Enemy:
+    def __init__(self, x, y, w=40, h=50):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.speed = 3
+        self.direction = 1
+    def update(self, platforms):
+        self.rect.x += self.speed * self.direction
+        on_platform = False
+        for platform in platforms:
+            if self.rect.colliderect(platform.rect):
+                on_platform = True
+                break
+        if not on_platform:
+            self.direction *= -1
+            self.rect.x += self.speed * self.direction * 2
+    def draw(self, screen):
+        pygame.draw.rect(screen, ENEMY_COLOR, self.rect)
+        pygame.draw.circle(screen, BLACK, (self.rect.centerx - 10, self.rect.top + 15), 5)
+        pygame.draw.circle(screen, BLACK, (self.rect.centerx + 10, self.rect.top + 15), 5)
+
+class Boss:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x, y, 120, 150)
+        self.speed = 2
+        self.direction = 1
+        self.health = 20
+        self.projectiles = []
+        self.attack_cooldown = 0
+
+    def update(self, platforms):
+        self.rect.x += self.speed * self.direction
+        if self.rect.left < 400 or self.rect.right > WIDTH - 50:
+            self.direction *= -1
+            self.rect.x += self.speed * self.direction * 2
+
+        # cooldown attack
+        if self.attack_cooldown > 0:
+            self.attack_cooldown -= 1
+        else:
+            self.attack()
+
+        # update projectile
+        for proj in self.projectiles[:]:
+            proj.update()
+            if proj.rect.colliderect(cat.rect):
+                global lives
+                lives -= 1
+                self.projectiles.remove(proj)
+                cat.rect.x = 100
+                cat.rect.y = HEIGHT - cat.height - 50
+                cat.vel_y = 0
+                if lives <= 0:
+                    game_over(screen, score)
+                    pygame.quit()
+                    sys.exit()
+            elif proj.rect.top > HEIGHT:
+                self.projectiles.remove(proj)
+
+    def attack(self):
+        # Luncurkan proyektil dari tengah bawah boss
+        px = self.rect.centerx
+        py = self.rect.bottom
+        self.projectiles.append(Projectile(px, py))
+        self.attack_cooldown = 90
+
+    def draw(self, screen):
+        pygame.draw.rect(screen, BOSS_COLOR, self.rect)
+        pygame.draw.rect(screen, (255, 0, 0), (self.rect.x, self.rect.y - 20, int(self.health * 6), 10)) # health bar
+
+        for proj in self.projectiles:
+            proj.draw(screen)
+
+class Projectile:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x - 5, y, 10, 20)
+        self.speed = 7
+    def update(self):
+        self.rect.y += self.speed
+    def draw(self, screen):
+        pygame.draw.rect(screen, PROJECTILE_COLOR, self.rect)
+
+def draw_text(text, x, y):
+    img = font.render(text, True, BLACK)
+    screen.blit(img, (x, y))
+
+# Level data: list berisi dict platform, fish, musuh dan boss
+levels = [
+    {
+        "platforms": [
+            Platform(0, HEIGHT - 50, WIDTH, 50),
+            Platform(200, 450, 150, 20),
+            Platform(450, 350, 150, 20),
+            Platform(100, 250, 150, 20),
+            Platform(400, 150, 150, 20)
+        ],
+        "fish": [
+            Fish(250, 410),
+            Fish(500, 310),
+            Fish(150, 210),
+            Fish(450, 110)
+        ],
+        "enemies": [
+            Enemy(220, 400),
+            Enemy(470, 300),
+        ],
+        "boss": None
+    },
+    {
+        "platforms": [
+            Platform(0, HEIGHT - 50, WIDTH, 50),
+            Platform(150, 500, 120, 20),
+            Platform(350, 420, 120, 20),
+            Platform(600, 350, 150, 20),
+            Platform(300, 270, 150, 20),
+            Platform(500, 170, 150, 20),
+            Platform(700, 100, 100, 20)
+        ],
+        "fish": [
+            Fish(200, 460),
+            Fish(400, 380),
+            Fish(650, 310),
+            Fish(350, 220),
+            Fish(550, 120),
+            Fish(750, 70)
+        ],
+        "enemies": [
+            Enemy(170, 450),
+            Enemy(360, 400),
+            Enemy(610, 300),
+        ],
+        "boss": Boss(650, HEIGHT - 200)
+    }
+]
+
+current_level = 0
+cat = Cat()
+
+def reset_level(level):
+    global cat, score
+    cat.rect.x = 100
+    cat.rect.y = HEIGHT - cat.height - 50
+    cat.vel_y = 0
+    cat.jumping = False
+    cat.jump_count = 0
+
+def game_over(screen, score):
+    screen.fill((255, 0, 0))
+    font_big = pygame.font.SysFont(None, 72)
+    text = font_big.render("GAME OVER", True, (255, 255, 255))
+    score_text = font_big.render(f"Score: {score}", True, (255, 255, 255))
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//3))
+    screen.blit(score_text, (WIDTH//2 - score_text.get_width()//2, HEIGHT//2))
+    pygame.display.flip()
+    pygame.time.wait(4000)
+
+def main():
+    global score, lives, current_level
+    running = True
+    while running:
+        clock.tick(60)
+        screen.fill(SKY)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        keys = pygame.key.get_pressed()
+        dx = 0
+        if keys[pygame.K_LEFT]:
+            dx = -1
+        elif keys[pygame.K_RIGHT]:
+            dx = 1
+        cat.move(dx)
+
+        if keys[pygame.K_SPACE]:
+            cat.jump()
+
+        level_data = levels[current_level]
+
+        cat.update(level_data["platforms"])
+
+        for enemy in level_data["enemies"]:
+            enemy.update(level_data["platforms"])
+
+        if level_data["boss"]:
+            level_data["boss"].update(level_data["platforms"])
+
+        # Cek koleksi ikan
+        for fish in level_data["fish"][:]:
+            if cat.rect.colliderect(fish.rect):
+                level_data["fish"].remove(fish)
+                score += 10
+
+        # Cek tabrakan dengan musuh
+        for enemy in level_data["enemies"]:
+            if cat.rect.colliderect(enemy.rect):
+                lives -= 1
+                reset_level(current_level)
+                if lives <= 0:
+                    game_over(screen, score)
+                    running = False
+
+        # Cek tabrakan boss
+        boss = level_data["boss"]
+        if boss:
+            if cat.rect.colliderect(boss.rect):
+                lives -= 1
+                reset_level(current_level)
+                if lives <= 0:
+                    game_over(screen, score)
+                    running = False
+            if boss.health <= 0:
+                # Boss kalah, naik level
+                current_level += 1
+                if current_level >= len(levels):
+                    # Menang
+                    screen.fill((0, 255, 0))
+                    win_text = font.render("You Win! Congrats!", True, BLACK)
+                    screen.blit(win_text, (WIDTH//2 - win_text.get_width()//2, HEIGHT//2))
+                    pygame.display.flip()
+                    pygame.time.wait(5000)
+                    running = False
+                else:
+                    reset_level(current_level)
+
+        # Draw everything
+        for platform in level_data["platforms"]:
+            platform.draw(screen)
+        for fish in level_data["fish"]:
+            fish.draw(screen)
+        for enemy in level_data["enemies"]:
+            enemy.draw(screen)
+        if boss:
+            boss.draw(screen)
+
+        cat.draw(screen)
+
+        draw_text(f"Score: {score}", 10, 10)
+        draw_text(f"Lives: {lives}", 10, 40)
+        draw_text(f"Level: {current_level+1}", WIDTH - 140, 10)
+
+        pygame.display.flip()
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
